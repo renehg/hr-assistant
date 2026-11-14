@@ -1,0 +1,121 @@
+# Pipeline de CI del HR Assistant (spec/04-production.md, punto 6).
+# Cuatro trabajos encadenados con needs: cada etapa se ve por separado en la
+# pestaña Actions y una falla detiene las siguientes. Render publica solo si
+# todo pasa (autoDeployTrigger: checksPass en render.yaml).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# Una corrida nueva de la misma rama cancela la anterior
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  # Clave de ejemplo solo para el CI: no es un secreto ni sirve en Render
+  CI_API_KEY: ci-example-key-0123456789
+
+jobs:
+  style:
+    name: style (pylint, 88 columnas)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Instalar dependencias
+        # pylint no está en requirements.txt; se instala aparte para esta etapa
+        run: |
+          pip install -r requirements.txt
+          pip install pylint
+      - name: pylint
+        run: >-
+          python -m pylint app tests --max-line-length=88 --fail-under=10
+          --disable=missing-function-docstring,redefined-outer-name,too-few-public-methods
+
+  unit:
+    name: unit (pruebas y BDD, cobertura 80 %)
+    needs: style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Pruebas con cobertura
+        run: python -m pytest tests -q --cov=app --cov-fail-under=80
+
+  e2e:
+    name: e2e (Playwright, modelo simulado)
+    needs: unit
+    runs-on: ubuntu-latest
+    # La misma clave de ejemplo (CI_API_KEY) arranca el producto y la escribe la prueba
+    env:
+      MODEL_PROVIDER: fake
+      API_KEYS: "ci:ci-example-key-0123456789"
+      RATE_LIMIT_PER_MINUTE: "1000"
+      E2E_API_KEY: "ci-example-key-0123456789"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Instalar Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Arrancar el producto
+        run: |
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > server.log 2>&1 &
+          for _ in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8000/health > /dev/null; then
+              echo "El producto respondió en /health"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "El producto no arrancó"
+          cat server.log
+          exit 1
+      - name: Pruebas de punta a punta
+        run: python -m pytest e2e -q --base-url http://127.0.0.1:8000
+      - name: Log del producto
+        if: always()
+        run: cat server.log
+
+  docker:
+    name: docker (build de la imagen)
+    needs: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: docker build
+        run: docker build -t hr-assistant:ci .
+      - name: La imagen arranca y responde en /health
+        run: |
+          docker run -d --name hr-assistant -p 8000:8000 \
+            -e MODEL_PROVIDER=fake \
+            -e API_KEYS="ci:${CI_API_KEY}" \
+            hr-assistant:ci
+          for _ in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8000/health > /dev/null; then
+              echo "La imagen respondió en /health"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "La imagen no arrancó"
+          docker logs hr-assistant
+          exit 1

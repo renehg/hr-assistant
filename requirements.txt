@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pydantic
+# httpx: cliente del AI Gateway (app/gateway.py) y cliente de pruebas
+httpx
+langsmith
+pytest
+pytest-bdd
+pytest-cov
+# pytest-playwright: pruebas de punta a punta de la pagina (e2e/); luego hace falta
+# instalar el navegador con `playwright install chromium`
+pytest-playwright

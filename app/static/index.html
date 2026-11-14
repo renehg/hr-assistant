@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HR Assistant</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 720px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      color: #222;
+    }
+    h1 { font-size: 1.4rem; }
+    #conversation {
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      min-height: 200px;
+      padding: 0.75rem;
+      margin-bottom: 1rem;
+    }
+    .message { margin: 0.5rem 0; white-space: pre-wrap; }
+    .user { font-weight: bold; }
+    .tools { font-size: 0.85rem; color: #666; }
+    .request-id { font-size: 0.8rem; color: #666; font-family: monospace; }
+    .error { color: #b00020; }
+    form { display: flex; gap: 0.5rem; }
+    input { flex: 1; padding: 0.5rem; }
+    button { padding: 0.5rem 1rem; }
+    .key-row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
+    .key-row label { font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>HR Assistant</h1>
+  <div class="key-row">
+    <label for="api-key">Clave de acceso</label>
+    <input id="api-key" data-testid="api-key" type="password"
+           placeholder="Tu clave de cliente" autocomplete="off">
+  </div>
+  <div id="conversation" data-testid="answer" aria-live="polite"></div>
+  <form id="ask-form">
+    <input id="question" data-testid="question" type="text"
+           placeholder="Pregunta por un empleado (EMP-0001) o un departamento"
+           autocomplete="off">
+    <button id="send" data-testid="send" type="submit">Enviar</button>
+  </form>
+  <script>
+    // El historial vive solo en el navegador; la API no guarda nada.
+    const history = [];
+    const conversation = document.getElementById("conversation");
+    const form = document.getElementById("ask-form");
+    const questionInput = document.getElementById("question");
+    const sendButton = document.getElementById("send");
+    const apiKeyInput = document.getElementById("api-key");
+
+    // La clave vive solo en sessionStorage: se borra al cerrar la pestaña.
+    // Nunca se guarda de forma permanente ni va escrita en esta página.
+    const API_KEY_STORAGE = "hr-assistant-api-key";
+    apiKeyInput.value = sessionStorage.getItem(API_KEY_STORAGE) || "";
+    apiKeyInput.addEventListener("input", () => {
+      sessionStorage.setItem(API_KEY_STORAGE, apiKeyInput.value.trim());
+    });
+
+    // Traduce un error HTTP a un mensaje en español para la persona.
+    function errorReason(response) {
+      if (response.status === 401) {
+        return "Clave inválida";
+      }
+      if (response.status === 429) {
+        const seconds = response.headers.get("Retry-After") || "unos";
+        return "Demasiadas preguntas; espera " + seconds + " segundos";
+      }
+      if (response.status === 422) {
+        return "La pregunta no es válida (vacía o demasiado larga).";
+      }
+      return "El servidor respondió con un error (" + response.status + ").";
+    }
+
+    // Agrega una línea a la conversación usando solo textContent.
+    function addLine(text, className) {
+      const line = document.createElement("div");
+      line.className = "message " + className;
+      line.textContent = text;
+      conversation.appendChild(line);
+      return line;
+    }
+
+    // Muestra el request_id para que la persona pueda citarlo a soporte.
+    function showRequestId(requestId) {
+      if (requestId) {
+        const line = addLine("Id para soporte (request_id): " + requestId,
+                             "request-id");
+        line.setAttribute("data-testid", "request_id");
+      }
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const question = questionInput.value.trim();
+      if (!question) {
+        addLine("Escribe una pregunta antes de enviar.", "error");
+        return;
+      }
+      addLine("Tú: " + question, "user");
+      sendButton.disabled = true;
+      const apiKey = apiKeyInput.value.trim();
+      sessionStorage.setItem(API_KEY_STORAGE, apiKey);
+      try {
+        const response = await fetch("/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+          body: JSON.stringify({ question: question, history: history }),
+        });
+        if (!response.ok) {
+          addLine("Error: " + errorReason(response), "error");
+          showRequestId(response.headers.get("X-Request-ID"));
+          return;
+        }
+        const body = await response.json();
+        addLine("Asistente: " + body.answer, "assistant");
+        const tools = body.tools_used.length
+          ? body.tools_used.join(", ")
+          : "ninguna";
+        addLine("Herramientas usadas: " + tools, "tools");
+        showRequestId(body.request_id);
+        history.push({ role: "user", content: question });
+        history.push({ role: "assistant", content: body.answer });
+        questionInput.value = "";
+      } catch (error) {
+        addLine("Error: no se pudo conectar con el servidor.", "error");
+      } finally {
+        sendButton.disabled = false;
+        questionInput.focus();
+      }
+    });
+  </script>
+</body>
+</html>

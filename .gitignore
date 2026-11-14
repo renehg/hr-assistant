@@ -1,0 +1,17 @@
+# Secretos: el .env nunca se sube; .env.example sí, porque no tiene valores
+.env
+.env.*
+!.env.example
+
+# Entorno virtual
+.venv/
+
+# Cachés de Python y de las herramientas de prueba
+__pycache__/
+*.pyc
+.pytest_cache/
+.pylint.d/
+
+# Cobertura
+.coverage
+htmlcov/
