@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.agent import Agent
+from app.agent import Agent, Tool
 from app.clock import FixedClock
 from app.config import load_settings
 from app.llm import Completion
@@ -221,3 +221,67 @@ def test_agent_run_event_reports_model_route_and_cost_without_texts(directory):
     assert run["cost_usd"] == pytest.approx(result.cost_usd)
     assert run["cost_usd"] > 0
     assert "privada" not in stream.getvalue()
+
+
+# Reto de facturación: herramientas inyectadas y mensaje de sistema propio.
+
+
+def _echo_tool():
+    """Herramienta de prueba que repite su argumento."""
+    return Tool(
+        name="echo",
+        parse_args=lambda args: args if isinstance(args, dict) else None,
+        run=lambda text: f"eco {text}",
+        audit_args=lambda args: {},
+        missing_message="error: echo necesita argumentos.",
+    )
+
+
+def test_system_prompt_goes_before_history_and_question(directory):
+    model = ScriptedModel([_answer("hola")])
+    history = [{"role": "user", "content": "Hola"}]
+    agent = Agent(
+        model=model, directory=directory, max_steps=3, system_prompt="[factura] reglas"
+    )
+
+    agent.run("Factura a Ferretería López", history)
+
+    assert model.calls[0] == [
+        {"role": "system", "content": "[factura] reglas"},
+        {"role": "user", "content": "Hola"},
+        {"role": "user", "content": "Factura a Ferretería López"},
+    ]
+
+
+def test_hr_agent_sends_no_system_message_and_keeps_its_tools(directory):
+    model = ScriptedModel(
+        [_tool("get_employee", employee_id="EMP-0001"), _answer("listo")]
+    )
+
+    result = Agent(model=model, directory=directory, max_steps=3).run("EMP-0001", [])
+
+    assert all(message["role"] != "system" for message in model.calls[0])
+    assert result.tools_used == ["get_employee"]
+
+
+def test_given_tools_replace_the_directory_tools(directory):
+    model = ScriptedModel(
+        [
+            _tool("get_employee", employee_id="EMP-0001"),
+            _tool("echo", text="hola"),
+            _answer("listo"),
+        ]
+    )
+    agent = Agent(model=model, directory=directory, max_steps=3, tools=[_echo_tool()])
+
+    result = agent.run("EMP-0001", [])
+
+    assert result.tools_used == ["echo"]
+    assert "no existe" in model.calls[1][-1]["content"]
+    assert "Ana López" not in json.dumps(model.calls, ensure_ascii=False)
+    assert model.calls[2][-1]["content"] == TOOL_PREFIX + "eco hola"
+
+
+def test_agent_without_directory_or_tools_is_rejected():
+    with pytest.raises(ValueError):
+        Agent(model=ScriptedModel([_answer("hola")]), directory=None, max_steps=3)

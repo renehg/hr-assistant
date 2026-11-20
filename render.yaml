@@ -18,6 +18,11 @@ services:
         value: "true"
       - key: HIDE_OUTPUTS
         value: "true"
+      # Con ENVIRONMENT=production el producto no arranca si PII_MASKING no es true
+      # (spec/05-facturacion.md, punto 12). CLIENTES_PATH y CONCEPTOS_PATH no se
+      # fijan: usan sus rutas por omisión (data/), que la imagen ya incluye.
+      - key: PII_MASKING
+        value: "true"
       # Secretos: Render los pide al crear el Blueprint; nunca se escriben aquí.
       # LANGSMITH_API_KEY es opcional y se agrega en Render > Environment si se
       # encienden las trazas.

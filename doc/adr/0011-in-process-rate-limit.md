@@ -1,6 +1,7 @@
 # 0011. Límite de peticiones en memoria, por cliente y con reloj inyectado
 
-Estado: propuesto. Matiza el ADR 0001 (API sin estado), igual que el ADR 0005 con las métricas.
+Estado: aceptado (publicado el 2026-11-14). Matiza el ADR 0001 (API sin estado), igual que el
+ADR 0005 con las métricas.
 
 ## Contexto
 

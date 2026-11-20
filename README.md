@@ -53,11 +53,55 @@ Desde la sesión 4 el producto está cerrado para publicarse:
   (segundos que faltan). El límite es por proceso: con varias copias se multiplica (ADR 0011).
 - **Compliance como código.** Con `ENVIRONMENT=production` el producto se niega a arrancar si
   `MODEL_PROVIDER=fake`, si `API_KEYS` está vacía o alguna clave tiene menos de 16 caracteres, o si
-  las trazas están encendidas sin `HIDE_INPUTS=true` y `HIDE_OUTPUTS=true`. Cada regla, dónde está
+  las trazas están encendidas sin `HIDE_INPUTS=true` y `HIDE_OUTPUTS=true`, o si `PII_MASKING` no
+  vale `true`. Cada regla, dónde está
   y cómo se comprueba: `doc/compliance-checklist.md`.
 - **La página** tiene un campo de clave tipo contraseña. La clave se guarda solo en
   `sessionStorage` (se pierde al cerrar la pestaña) y se manda en `X-API-Key`. Con `401` muestra
   «Clave inválida» y con `429` «Demasiadas preguntas; espera N segundos».
+
+Reto de facturación: **borrador de factura en lenguaje natural** (`POST /invoice`). Es un
+borrador **sin validez fiscal**, con datos ficticios: no se timbra ni se guarda nada.
+
+- **El modelo interpreta, el código calcula** (ADR 0014). El agente de facturación solo conoce la
+  herramienta `crear_factura(cliente, conceptos)`; nunca puede usar las del directorio de
+  empleados (ADR 0016). El modelo manda el texto del cliente y pares `{concepto, cantidad}`;
+  precios, ids o totales que mande se descartan.
+- **Catálogo cerrado** en `data/clientes.json` y `data/conceptos.json` (copias de `spec/`). Cliente
+  y conceptos se buscan sin acentos ni mayúsculas en `nombre` y `aliases`; gana el alias más
+  largo, sin traslapes. El cliente debe aparecer en la frase.
+- **Reglas de negocio**: cantidades enteras de 1 a `MAX_LINE_QUANTITY`, hasta `MAX_INVOICE_LINES`
+  líneas; `importe = cantidad × precio_unitario`, IVA 16 % redondeado mitad hacia arriba, todo con
+  `Decimal` y en la respuesta como texto con 2 decimales (`"1740.00"`), moneda `MXN`.
+- **Errores de negocio**: `422 {"detail": ...}` con `cliente no encontrado`, `no se reconoció
+  ningún concepto del catálogo` o `cantidad o número de líneas fuera de rango` (y `no se pudo
+  interpretar la factura` si el modelo no usa la herramienta).
+- **Validación de salida**: antes de responder, un validador independiente revisa el esquema, el
+  catálogo y recalcula importes, subtotal, IVA y total. Si algo no cuadra responde
+  `500 {"detail": "invoice failed validation"}` sin factura.
+- **Datos personales (PII)**: RFC, CURP, correo y teléfono de 10 dígitos se detectan en la frase y
+  en la respuesta del modelo; `pii_detected` lista solo tipos (`rfc`, `curp`, `email`, `phone`).
+  Con `PII_MASKING=true` el modelo recibe la frase enmascarada (`[EMAIL]`...) y el RFC del cliente
+  parcial (`FLO*****AB1`); la persona autenticada sí ve el RFC completo. Log, auditoría y trazas
+  nunca llevan valores (ADR 0015). En producción `PII_MASKING` debe ser `true`.
+- **Auditoría y métricas**: eventos `audit` con `client` y `request_id`: `invoice_created` (folio,
+  id del cliente, total), `invoice_rejected` (motivo) y `pii_detected` (tipos). `GET /metrics`
+  agrega `invoices_created`, `invoices_rejected` y `pii_detected`.
+- **La página** tiene una sección «Factura»: escribe la frase, pulsa «Crear borrador» y ve el
+  cliente, la tabla de líneas, subtotal, IVA y total; con `422` muestra el mensaje del servidor.
+
+Ejemplo (la clave se lee de una variable, nunca escrita en el comando):
+
+```bash
+curl -X POST http://localhost:8000/invoice \
+  -H "X-API-Key: $HR_API_KEY" -H "Content-Type: application/json" \
+  -d '{"text": "Cobra a Clínica Dental Sonrisa 4 horas de soporte técnico"}'
+```
+
+Responde `invoice` (`folio`, `fecha`, `estado: "borrador"`, `moneda: "MXN"`, `cliente`, `lineas`,
+`subtotal: "2400.00"`, `iva: "384.00"`, `total: "2784.00"`), `steps`, `tools_used`
+(`["crear_factura"]`), `input_tokens`, `output_tokens`, `cost_usd`, `request_id` y
+`pii_detected`.
 
 La arquitectura y las decisiones están en `doc/architecture.md` y `doc/adr/`.
 
@@ -79,6 +123,7 @@ Abre `http://localhost:8000/`, escribe tu clave en el campo «Clave de acceso» 
 | `GET /health` | No | Estado y `pid` de la copia |
 | `GET /docs` | No | Documentación de la API |
 | `POST /ask` | `X-API-Key` | Cuerpo `{"question": "...", "history": [...]}` |
+| `POST /invoice` | `X-API-Key` | Cuerpo `{"text": "..."}`; borrador de factura sin validez fiscal |
 | `GET /metrics` | `X-API-Key` | Métricas de este proceso |
 
 Desde la terminal, la clave va en el encabezado (léela de una variable, no la escribas en el
@@ -107,6 +152,42 @@ uv run python -m verification evaluate
 Ninguna prueba sale a la red: el cliente HTTP del gateway se inyecta y las pruebas usan
 `httpx.MockTransport`.
 
+Las pruebas de la factura en `tests/`:
+
+- `features/invoice.feature` (pasos en `test_invoice_steps.py`), con reloj y folio fijos: cuatro
+  frases válidas dan borradores en MXN con subtotal, IVA y total exactos y solo usan
+  `crear_factura`; los tres errores de negocio responden `422` en español y dejan un evento
+  `invoice_rejected`; un correo en la frase se detecta pero no llega al log ni al modelo; la
+  persona ve el RFC completo y el modelo solo el enmascarado; sin clave responde `401`; una frase
+  vacía se rechaza sin llamar al modelo; las métricas cuentan facturas creadas, rechazadas y con
+  PII; y producción no arranca con `PII_MASKING=false`.
+- `test_invoice_api.py`: una factura que no pasa la validación de salida nunca se devuelve, el
+  agente de facturación no puede usar el directorio de empleados, demasiadas líneas se rechazan y
+  la página trae la sección «Factura» sin `innerHTML`.
+- `test_pii.py`: detección de RFC, CURP, correo y teléfono (orden fijo, sin repetidos, una CURP
+  no cuenta también como RFC, un teléfono pegado a otros dígitos no cuenta) y enmascarado de cada
+  valor con su etiqueta.
+- `test_catalog.py`: la normalización quita acentos, mayúsculas y espacios de más; gana el alias
+  más largo sin traslapes y solo con palabras completas («3 licencias» no cuenta como
+  «licencia»); un catálogo con id repetido, RFC mal formado, alias vacío, precio sin centavos o
+  en cero no carga (y el error no trae el RFC); el catálogo real resuelve clientes y conceptos.
+- `test_invoice.py`: redondeo mitad hacia arriba a 2 decimales e IVA; una licencia para
+  Ferretería López da `1500.00`, `240.00` y `1740.00` con la fecha en hora de México; cantidades
+  enteras de 1 a 1000 (rechaza 0, 1001, booleanos y decimales); 6 líneas se rechazan; un
+  concepto desconocido se omite si hay otro conocido; los rechazos se revisan en orden cliente,
+  rangos, conceptos; `crear_factura` no acepta un cliente que no está en la frase, solo cuenta
+  su primera llamada y al modelo le devuelve la factura sin el RFC completo.
+- `test_invoice_validation.py`: una factura correcta pasa la validación de salida, y alterar un
+  solo campo (importe, subtotal, IVA, total, cliente o concepto inexistente, precio unitario,
+  total que no es texto o un campo faltante) la hace fallar sin poner el RFC en el error.
+- `test_agent.py` (facturación): el mensaje de sistema propio va antes del historial y la
+  pregunta; el agente de Recursos Humanos no manda mensaje de sistema y conserva sus
+  herramientas; las herramientas inyectadas reemplazan a las del directorio (una llamada a
+  `get_employee` recibe «no existe» y no se filtran datos de empleados); sin directorio ni
+  herramientas el agente no se crea.
+- `test_gateway.py` (facturación): un mensaje de sistema propio reemplaza al de Recursos Humanos
+  en la petición al gateway, y sin él se manda el de Recursos Humanos.
+
 Las pruebas de punta a punta de la página (`e2e/`) usan pytest-playwright (está en
 `requirements.txt`). La primera vez instala el navegador y luego córrelas desde la raíz:
 
@@ -117,11 +198,15 @@ uv run python -m verification e2e
 
 `verification e2e` arranca el producto con el modelo simulado (`MODEL_PROVIDER=fake`, sin red)
 en un puerto local, con una `API_KEYS` de prueba que inventa la verificación, y pone esa misma
-clave en `E2E_API_KEY` para que la página la escriba; luego abre la página en Chromium. Cubren
-que el campo de clave es de tipo contraseña, que una pregunta muestra la respuesta y su
-`request_id`, que la caja vacía muestra un error en español sin llamar a la API, que una segunda
-pregunta se agrega sin borrar la conversación anterior y que una clave equivocada muestra
-«Clave inválida».
+clave en `E2E_API_KEY` para que la página la escriba; luego abre la página en Chromium.
+
+- `e2e/test_chat_page.py` (preguntas): el campo de clave es de tipo contraseña, una pregunta
+  muestra la respuesta y su `request_id`, la caja vacía muestra un error en español sin llamar a
+  la API, una segunda pregunta se agrega sin borrar la conversación anterior y una clave
+  equivocada muestra «Clave inválida».
+- `e2e/test_invoice_page.py` (sección «Factura»): una frase para Ferretería López muestra el
+  cliente, la tabla de líneas, el subtotal `9200.00`, el IVA `1472.00` y el total `10672.00`; un
+  cliente fuera del catálogo muestra «cliente no encontrado» y ninguna tabla.
 
 ## Publicar: Docker, CI y Render
 
@@ -235,6 +320,11 @@ llénalo y cárgalo en la misma terminal con `set -a; . ./.env; set +a` antes de
 | `ENVIRONMENT` | `development` | `development` o `production`; con `production` se aplican las reglas de compliance |
 | `API_KEYS` | (sin valor) | Clientes y claves `cliente:clave,...` (secreto) |
 | `RATE_LIMIT_PER_MINUTE` | `30` | Peticiones por cliente por minuto (1 o más) |
+| `CLIENTES_PATH` | `data/clientes.json` | Catálogo de clientes (relativo a `product/`) |
+| `CONCEPTOS_PATH` | `data/conceptos.json` | Catálogo de conceptos (relativo a `product/`) |
+| `MAX_INVOICE_LINES` | `5` | Máximo de líneas por factura |
+| `MAX_LINE_QUANTITY` | `1000` | Cantidad máxima por línea |
+| `PII_MASKING` | `true` | Enmascara PII antes del modelo; obligatorio `true` en producción |
 
 Un valor inválido (por ejemplo `SLO_P95_MS=0`, `LANGSMITH_TRACING=quizas` o `MODEL_TEMPERATURE=3`)
 impide arrancar con un mensaje que nombra la variable. También impiden arrancar: `gateway` sin
@@ -242,8 +332,9 @@ impide arrancar con un mensaje que nombra la variable. También impiden arrancar
 El token de Cloudflare nunca aparece en el log, en los errores ni en `repr` de la configuración.
 Lo mismo vale para las claves de `API_KEYS`. También impiden arrancar una `API_KEYS` mal formada
 (entrada sin `:`, cliente o clave vacíos, cliente repetido), un `ENVIRONMENT` distinto de
-`development` o `production` y, con `ENVIRONMENT=production`, cualquier regla de
-`doc/compliance-checklist.md` incumplida.
+`development` o `production`, un `CLIENTES_PATH` o `CONCEPTOS_PATH` que no existe o tiene
+entradas inválidas (ids repetidos, RFC o precio con mal formato, alias vacíos) y, con
+`ENVIRONMENT=production`, cualquier regla de `doc/compliance-checklist.md` incumplida.
 
 Las trazas solo se activan con `LANGSMITH_TRACING=true` **y** `LANGSMITH_API_KEY`; sin la clave el
 producto funciona igual y no intenta conectarse. La clave la lee el SDK de LangSmith del entorno: el

@@ -21,6 +21,7 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 CACHE_TTL_HEADER = "cf-aig-cache-ttl"
 CACHE_STATUS_HEADER = "cf-aig-cache-status"
 CACHE_HIT = "HIT"
+SYSTEM_ROLE = "system"
 PROTOCOL_PROMPT = (
     "Eres el asistente de Recursos Humanos. Responde siempre con un único objeto "
     "JSON y nada más. Para consultar el directorio pide una herramienta: "
@@ -151,14 +152,18 @@ class GatewayModel:  # pylint: disable=too-few-public-methods
     def _payload(self, messages: Sequence[Mapping[str, str]]) -> dict:
         """Arma el cuerpo con el prompt del protocolo antes de la conversación.
 
+        Si la conversación ya empieza con un mensaje de sistema (el agente de
+        facturación trae el suyo), se usa ese y no se agrega el de RH. La API
+        nunca acepta mensajes de sistema de la persona (``HistoryMessage``).
+
         :param messages: Mensajes con ``role`` y ``content``.
         :type messages: Sequence[Mapping[str, str]]
         :return: ``model``, ``messages``, ``max_tokens`` y ``temperature``.
         :rtype: dict
         """
-        conversation: List[Dict[str, str]] = [
-            {"role": "system", "content": PROTOCOL_PROMPT}
-        ]
+        conversation: List[Dict[str, str]] = []
+        if not messages or str(messages[0]["role"]) != SYSTEM_ROLE:
+            conversation.append({"role": SYSTEM_ROLE, "content": PROTOCOL_PROMPT})
         conversation.extend(
             {"role": str(item["role"]), "content": str(item["content"])}
             for item in messages

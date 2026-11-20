@@ -49,16 +49,13 @@ def _ask(page: Page, question: str) -> None:
     page.get_by_test_id("send").click()
 
 
-def test_the_api_key_field_hides_what_is_typed(page: Page) -> None:
-    """El campo de clave existe y es de tipo contraseña."""
-    page.goto("/")
-
-    expect(page.get_by_test_id("api-key")).to_have_attribute("type", "password")
-
-
 def test_asking_a_question_shows_the_answer_and_its_request_id(page: Page) -> None:
-    """Con la clave válida, una pregunta muestra la respuesta y su request_id."""
+    """Con la clave válida (en un campo oculto), una pregunta muestra la respuesta.
+
+    También comprueba que el campo de clave es de tipo contraseña.
+    """
     _open_with_key(page, _valid_api_key())
+    expect(page.get_by_test_id("api-key")).to_have_attribute("type", "password")
     _ask(page, FIRST_QUESTION)
 
     answer = page.get_by_test_id("answer")

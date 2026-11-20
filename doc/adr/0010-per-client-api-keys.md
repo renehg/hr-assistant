@@ -1,6 +1,6 @@
 # 0010. Clave por cliente en una dependencia de FastAPI
 
-Estado: propuesto.
+Estado: aceptado (publicado el 2026-11-14).
 
 ## Contexto
 

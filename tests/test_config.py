@@ -122,6 +122,15 @@ def test_production_settings_have_the_defaults_of_the_spec():
     assert settings.rate_limit_per_minute == 30
 
 
+def test_invoice_settings_have_the_defaults_of_the_spec():
+    settings = load_settings({})
+    assert Path(settings.clientes_path).name == "clientes.json"
+    assert Path(settings.conceptos_path).name == "conceptos.json"
+    assert settings.max_invoice_lines == 5
+    assert settings.max_line_quantity == 1000
+    assert settings.pii_masking is True
+
+
 def test_client_api_keys_are_kept_but_never_appear_in_settings():
     secret = "acme-key-that-must-stay-hidden"
     settings = load_settings({"API_KEYS": f"acme:{secret}"})

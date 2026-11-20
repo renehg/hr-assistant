@@ -1,8 +1,13 @@
-"""Agente único con bucle con tope y dos herramientas de solo lectura."""
+"""Agente con bucle con tope y un conjunto cerrado de herramientas.
+
+Por omisión es el agente de RH, con dos herramientas de solo lectura del
+directorio. El agente de facturación se construye con otras herramientas
+(``tools``) y un mensaje de sistema propio: solo puede usar las que recibe.
+"""
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from app.directory import EmployeeDirectory
 from app.llm import TOOL_RESULT_PREFIX, Completion, LanguageModel
@@ -75,6 +80,61 @@ class AgentResult:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True)
+class Tool:
+    """Herramienta que el agente puede ejecutar.
+
+    :param name: Nombre con el que el modelo la pide.
+    :type name: str
+    :param parse_args: Valida los argumentos del modelo; devuelve los
+        argumentos limpios o ``None`` si no sirven.
+    :type parse_args: Callable[[object], dict or None]
+    :param run: Ejecuta la herramienta con los argumentos limpios y devuelve
+        el texto que verá el modelo.
+    :type run: Callable[..., str]
+    :param audit_args: Lo que se registra en ``audit`` (nunca texto libre).
+    :type audit_args: Callable[[dict], dict]
+    :param missing_message: Error para el modelo si los argumentos no sirven.
+    :type missing_message: str
+    """
+
+    name: str
+    parse_args: Callable[[object], Optional[Dict[str, Any]]]
+    run: Callable[..., str]
+    audit_args: Callable[[Dict[str, Any]], Dict[str, Any]]
+    missing_message: str
+
+
+def text_argument_tool(name: str, arg_name: str, run: Callable[[str], str]) -> Tool:
+    """Crea una herramienta de un solo argumento de texto.
+
+    El argumento validado (un id o un departamento) va tal cual a ``audit``.
+
+    :param name: Nombre de la herramienta.
+    :type name: str
+    :param arg_name: Nombre del argumento.
+    :type arg_name: str
+    :param run: Función que recibe el argumento.
+    :type run: Callable[[str], str]
+    :return: La herramienta.
+    :rtype: Tool
+    """
+
+    def parse(args: object) -> Optional[Dict[str, Any]]:
+        """Acepta solo ``{arg_name: str}``."""
+        if isinstance(args, dict) and isinstance(args.get(arg_name), str):
+            return {arg_name: args[arg_name]}
+        return None
+
+    return Tool(
+        name=name,
+        parse_args=parse,
+        run=run,
+        audit_args=dict,
+        missing_message=f"error: falta el argumento {arg_name!r} para {name}.",
+    )
+
+
+@dataclass(frozen=True)
 class _RunModel:
     """Modelo de una corrida junto con la ruta que lo eligió.
 
@@ -128,8 +188,9 @@ class Agent:  # pylint: disable=too-many-instance-attributes
 
     :param model: Modelo que cumple la interfaz ``complete(messages)``.
     :type model: LanguageModel
-    :param directory: Directorio de empleados de solo lectura.
-    :type directory: EmployeeDirectory
+    :param directory: Directorio de empleados de solo lectura; solo se usa si
+        no se dan ``tools``.
+    :type directory: EmployeeDirectory or None
     :param max_steps: Tope de vueltas del bucle (mínimo 1).
     :type max_steps: int
     :param logger: Logger JSON para ``audit`` y ``agent_run``; ``None`` no
@@ -142,23 +203,35 @@ class Agent:  # pylint: disable=too-many-instance-attributes
     :param history_window: Mensajes de historial que se mandan al modelo;
         ``None`` manda todo el historial.
     :type history_window: int or None
+    :param tools: Herramientas permitidas; ``None`` usa las dos del
+        directorio. El agente no conoce ninguna otra (mínimo privilegio).
+    :type tools: Sequence[Tool] or None
+    :param system_prompt: Mensaje de sistema que va antes de la conversación.
+    :type system_prompt: str or None
+    :param run_name: Nombre de la traza de cada corrida.
+    :type run_name: str
     """
 
     def __init__(  # pylint: disable=too-many-arguments
         self,
         model: LanguageModel,
-        directory: EmployeeDirectory,
+        directory: Optional[EmployeeDirectory],
         max_steps: int,
         *,
         logger: Optional[JsonLogger] = None,
         tracer: Optional[Tracer] = None,
         prices: Optional[PriceTable] = None,
         history_window: Optional[int] = None,
+        tools: Optional[Sequence[Tool]] = None,
+        system_prompt: Optional[str] = None,
+        run_name: str = "agent.run",
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")
         if history_window is not None and history_window < 0:
             raise ValueError("history_window must be at least 0")
+        if tools is None and directory is None:
+            raise ValueError("an agent needs a directory or its own tools")
         self._trace = tracer or no_tracing
         self._model = model
         self._directory = directory
@@ -166,18 +239,32 @@ class Agent:  # pylint: disable=too-many-instance-attributes
         self._logger = logger
         self._prices = prices
         self._history_window = history_window
-        self._loop = self._trace("agent.run", "chain")(self._run_loop)
-        trace = self._trace
-        self._tools: Dict[str, Tuple[str, Callable[[str], str]]] = {
-            "get_employee": (
-                "employee_id",
-                trace("get_employee", "tool")(self._get_employee),
-            ),
-            "search_by_department": (
-                "department",
-                trace("search_by_department", "tool")(self._search_by_department),
-            ),
+        self._system_prompt = system_prompt
+        self._loop = self._trace(run_name, "chain")(self._run_loop)
+        allowed = list(tools) if tools is not None else self._directory_tools()
+        self._tools: Dict[str, Tool] = {
+            tool.name: Tool(
+                name=tool.name,
+                parse_args=tool.parse_args,
+                run=self._trace(tool.name, "tool")(tool.run),
+                audit_args=tool.audit_args,
+                missing_message=tool.missing_message,
+            )
+            for tool in allowed
         }
+
+    def _directory_tools(self) -> List[Tool]:
+        """Herramientas del agente de RH: ``get_employee`` y ``search_by_department``.
+
+        :return: Las dos herramientas de solo lectura del directorio.
+        :rtype: list[Tool]
+        """
+        return [
+            text_argument_tool("get_employee", "employee_id", self._get_employee),
+            text_argument_tool(
+                "search_by_department", "department", self._search_by_department
+            ),
+        ]
 
     def run(  # pylint: disable=too-many-arguments
         self,
@@ -292,10 +379,13 @@ class Agent:  # pylint: disable=too-many-instance-attributes
         :rtype: AgentResult
         """
         complete = self._trace("model.complete", "llm")(run_model.model.complete)
-        messages = [
+        messages = []
+        if self._system_prompt is not None:
+            messages.append({"role": "system", "content": self._system_prompt})
+        messages.extend(
             {"role": str(item["role"]), "content": str(item["content"])}
             for item in history
-        ]
+        )
         messages.append({"role": "user", "content": question})
         result = AgentResult(
             answer=STEP_CAP_MESSAGE,
@@ -337,8 +427,9 @@ class Agent:  # pylint: disable=too-many-instance-attributes
     ) -> str:
         """Ejecuta una herramienta; los errores se devuelven como texto.
 
-        Solo las llamadas válidas dejan un evento ``audit``, con el argumento
-        ya validado (un id o un departamento, nunca texto libre) y el cliente.
+        Solo las llamadas válidas dejan un evento ``audit``, con lo que la
+        herramienta decide registrar (un id, un departamento o un conteo, nunca
+        texto libre) y el cliente.
 
         :param name: Nombre de la herramienta pedida.
         :type name: str
@@ -353,9 +444,10 @@ class Agent:  # pylint: disable=too-many-instance-attributes
         """
         if name not in self._tools:
             return f"error: la herramienta {name!r} no existe."
-        arg_name, function = self._tools[name]
-        if not isinstance(args, dict) or not isinstance(args.get(arg_name), str):
-            return f"error: falta el argumento {arg_name!r} para {name}."
+        tool = self._tools[name]
+        clean_args = tool.parse_args(args)
+        if clean_args is None:
+            return tool.missing_message
         result.tools_used.append(name)
         if self._logger is not None:
             self._logger.emit(
@@ -364,9 +456,9 @@ class Agent:  # pylint: disable=too-many-instance-attributes
                 client=caller.client,
                 action="tool_call",
                 tool=name,
-                args={arg_name: args[arg_name]},
+                args=tool.audit_args(clean_args),
             )
-        return function(args[arg_name])
+        return tool.run(**clean_args)
 
     def _get_employee(self, employee_id: str) -> str:
         """Herramienta ``get_employee``.

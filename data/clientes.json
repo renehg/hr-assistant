@@ -1,0 +1,32 @@
+[
+  {
+    "id": "CLI-001",
+    "nombre": "Ferretería López SA de CV",
+    "rfc": "FLO010101AB1",
+    "aliases": ["ferreteria lopez", "ferreteria lopez sa de cv"]
+  },
+  {
+    "id": "CLI-002",
+    "nombre": "Abarrotes La Esperanza SA de CV",
+    "rfc": "ALE020202CD2",
+    "aliases": ["abarrotes la esperanza", "abarrotes la esperanza sa de cv"]
+  },
+  {
+    "id": "CLI-003",
+    "nombre": "Transportes del Norte SA de CV",
+    "rfc": "TNO030303EF3",
+    "aliases": ["transportes del norte", "transportes del norte sa de cv"]
+  },
+  {
+    "id": "CLI-004",
+    "nombre": "Clínica Dental Sonrisa SC",
+    "rfc": "CDS040404GH4",
+    "aliases": ["clinica dental sonrisa", "clinica dental sonrisa sc"]
+  },
+  {
+    "id": "CLI-005",
+    "nombre": "Panadería El Trigal SA de CV",
+    "rfc": "PET050505IJ5",
+    "aliases": ["panaderia el trigal", "panaderia el trigal sa de cv"]
+  }
+]
