@@ -341,3 +341,6 @@ producto funciona igual y no intenta conectarse. La clave la lee el SDK de LangS
 producto nunca la guarda, la muestra ni la escribe en el log. Expórtala en el entorno antes de
 arrancar (directamente o cargando un `.env` como se explica arriba); escribirla en un `.env` sin
 cargarlo no tiene efecto.
+
+
+> **Entrega del reto M4.** Servicio en producción: https://hr-assistant-ff0e.onrender.com/docs · Reporte completo con evidencia: [docs/ENTREGA.md](docs/ENTREGA.md)
