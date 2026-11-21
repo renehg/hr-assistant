@@ -48,6 +48,19 @@ def test_cache_ttl_is_sent_and_a_hit_is_marked_as_cached(make_gateway_models, re
     assert completion.cached is True
 
 
+def test_own_system_message_replaces_the_hr_prompt(make_gateway_models, reply):
+    models, requests = make_gateway_models(lambda request: reply(ANSWER))
+    invoice_system = {"role": "system", "content": "[factura] reglas de facturación"}
+
+    models[SMALL_MODEL].complete([invoice_system, *QUESTION])
+    models[SMALL_MODEL].complete(QUESTION)
+
+    own, default = (json.loads(request.content)["messages"] for request in requests)
+    assert own == [invoice_system, *QUESTION]
+    assert default[0]["role"] == "system"
+    assert "Recursos Humanos" in default[0]["content"]
+
+
 def _timeout(request):
     raise httpx.ReadTimeout("timed out", request=request)
 

@@ -1,6 +1,6 @@
 # 0012. Compliance al arrancar y publicación solo con CI en verde
 
-Estado: propuesto.
+Estado: aceptado (publicado el 2026-11-14). Lo complementa el ADR 0013.
 
 ## Contexto
 
@@ -27,3 +27,5 @@ corre `style`, `unit`, `e2e` y `docker` encadenados con `needs`. `render.yaml` u
 - En `development` no se aplican las reglas: las pruebas y el e2e usan el modelo simulado.
 - Publicar exige dos llaves: la aprobación de una persona y el CI en verde.
 - `LANGSMITH_API_KEY` no va en el Blueprint (Render exige valor a cada secreto); se agrega a mano.
+- Que los secretos de Render existan no lo comprueba ni el CI ni compliance: lo aprendimos en la
+  primera publicación y lo resuelve el ADR 0013.

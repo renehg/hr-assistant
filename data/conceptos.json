@@ -1,0 +1,58 @@
+[
+  {
+    "id": "CON-001",
+    "descripcion": "Consultoría fiscal",
+    "unidad": "hora",
+    "precio_unitario": "850.00",
+    "aliases": ["consultoria fiscal", "asesoria fiscal"]
+  },
+  {
+    "id": "CON-002",
+    "descripcion": "Soporte técnico",
+    "unidad": "hora",
+    "precio_unitario": "600.00",
+    "aliases": ["soporte tecnico", "soporte"]
+  },
+  {
+    "id": "CON-003",
+    "descripcion": "Licencia mensual de software",
+    "unidad": "mes",
+    "precio_unitario": "1500.00",
+    "aliases": ["licencia mensual de software", "licencia mensual", "licencia"]
+  },
+  {
+    "id": "CON-004",
+    "descripcion": "Paquete de 100 timbres CFDI",
+    "unidad": "paquete",
+    "precio_unitario": "350.00",
+    "aliases": ["paquetes de timbres", "paquete de timbres", "timbres"]
+  },
+  {
+    "id": "CON-005",
+    "descripcion": "Integración con ERP",
+    "unidad": "servicio",
+    "precio_unitario": "12000.00",
+    "aliases": ["integracion con erp", "integracion erp"]
+  },
+  {
+    "id": "CON-006",
+    "descripcion": "Capacitación",
+    "unidad": "sesión",
+    "precio_unitario": "2500.00",
+    "aliases": ["sesiones de capacitacion", "sesion de capacitacion", "capacitacion"]
+  },
+  {
+    "id": "CON-007",
+    "descripcion": "Desarrollo a la medida",
+    "unidad": "hora",
+    "precio_unitario": "950.00",
+    "aliases": ["desarrollo a la medida", "desarrollo a medida"]
+  },
+  {
+    "id": "CON-008",
+    "descripcion": "Mantenimiento mensual",
+    "unidad": "mes",
+    "precio_unitario": "1800.00",
+    "aliases": ["mantenimiento mensual", "mantenimiento"]
+  }
+]

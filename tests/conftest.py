@@ -12,6 +12,9 @@ las fábricas fijan una ``API_KEYS`` de prueba con dos clientes y, salvo que se
 pida lo contrario con ``api_key=None``, el cliente HTTP manda la clave del
 cliente ``test-suite`` en cada petición. El limitador de peticiones se inyecta
 con su propio reloj manual, separado del reloj de latencias.
+
+Para el reto de facturación hay ``make_invoice_app``: reloj y folio fijos, y
+modelos que guardan lo que reciben para revisar el enmascarado de PII.
 """
 
 import io
@@ -178,6 +181,16 @@ def directory():
 
 
 @pytest.fixture
+def catalog():
+    """Catálogo real de clientes y conceptos, leído de las rutas por omisión."""
+    # pylint: disable=import-outside-toplevel
+    from app.catalog import Catalog
+
+    settings = load_settings({})
+    return Catalog.from_files(settings.clientes_path, settings.conceptos_path)
+
+
+@pytest.fixture
 def make_client(directory):
     """Fábrica de clientes de prueba con variables de entorno a medida."""
 
@@ -292,5 +305,111 @@ def make_observed_app(directory):
             app, raise_server_exceptions=False, headers=key_headers(api_key)
         )
         return ObservedApp(client=client, stream=stream, limiter_clock=limiter_clock)
+
+    return _make
+
+
+FIXED_FOLIO = "00000000-0000-4000-8000-000000000001"
+
+
+class RecordingModel:  # pylint: disable=too-few-public-methods
+    """Envuelve un modelo y guarda cada conversación que recibe.
+
+    Sirve para comprobar qué vio el modelo (por ejemplo, que la PII llega
+    enmascarada).
+
+    :param inner: Modelo real al que se delega.
+    :param calls: Lista compartida donde se guardan los mensajes recibidos.
+    """
+
+    def __init__(self, inner, calls):
+        self._inner = inner
+        self._calls = calls
+        self.name = getattr(inner, "name", "fake")
+
+    def complete(self, messages):
+        """Guarda los mensajes y delega en el modelo envuelto."""
+        self._calls.append([dict(message) for message in messages])
+        return self._inner.complete(messages)
+
+
+@dataclass
+class InvoiceApp(ObservedApp):
+    """Aplicación observada que además guarda lo que recibió el modelo.
+
+    :param model_calls: Conversaciones recibidas por los modelos, en orden.
+    """
+
+    model_calls: list = field(default_factory=list)
+
+    def model_text(self):
+        """Todo lo que recibió el modelo, como un solo texto."""
+        return json.dumps(self.model_calls, ensure_ascii=False)
+
+
+def _recorded_models(settings, directory, models, calls):
+    """Envuelve cada modelo en ``RecordingModel`` para guardar lo que recibe.
+
+    :param settings: Configuración de la aplicación.
+    :param directory: Directorio de empleados.
+    :param models: Modelos simulados opcionales.
+    :param calls: Lista compartida donde se guardan las conversaciones.
+    :return: Diccionario de modelos envueltos, por nombre.
+    """
+    inner = _models_for(settings, directory, models=models)
+    return {name: RecordingModel(model, calls) for name, model in inner.items()}
+
+
+@pytest.fixture
+def make_invoice_app(directory):
+    """Fábrica de aplicaciones para ``POST /invoice``.
+
+    Contrato que fijan las pruebas: ``create_app`` acepta ``folio_factory``
+    (función sin argumentos que devuelve el folio) e ``invoice_service`` (objeto
+    con ``create(cliente, conceptos)`` que devuelve la factura como diccionario,
+    con el dinero en texto). El reloj es fijo y el folio es ``FIXED_FOLIO``.
+    Los modelos simulados se envuelven en ``RecordingModel``.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.logging_json import JsonLogger
+    from app.metrics import Metrics
+    from app.rate_limit import RateLimiter
+
+    def _make(
+        models=None,
+        invoice_service=None,
+        api_key: Optional[str] = TEST_API_KEY,
+        **env,
+    ):
+        settings = load_settings(with_test_keys(env))
+        clock = SteppingClock()
+        limiter_clock = ManualClock()
+        stream = io.StringIO()
+        logger = JsonLogger(service=settings.service_name, clock=clock, stream=stream)
+        metrics = Metrics(slo_p95_ms=settings.slo_p95_ms)
+        calls = []
+        extra = {"invoice_service": invoice_service} if invoice_service else {}
+        app = create_app(
+            settings=settings,
+            models=_recorded_models(settings, directory, models, calls),
+            directory=directory,
+            clock=clock,
+            logger=logger,
+            metrics=metrics,
+            rate_limiter=RateLimiter(
+                limit_per_minute=settings.rate_limit_per_minute, clock=limiter_clock
+            ),
+            folio_factory=lambda: FIXED_FOLIO,
+            **extra,
+        )
+        client = TestClient(
+            app, raise_server_exceptions=False, headers=key_headers(api_key)
+        )
+        return InvoiceApp(
+            client=client,
+            stream=stream,
+            limiter_clock=limiter_clock,
+            model_calls=calls,
+        )
 
     return _make

@@ -1,6 +1,13 @@
 # 0003. Un solo agente con bucle con tope y protocolo JSON
 
-Estado: propuesto
+Estado: Ampliado por 0016
+
+Nota: este ADR ya no describe por sí solo el código vigente. El ADR 0016
+(`0016-least-privilege-invoice-agent.md`) lo amplía: `Agent` recibe sus herramientas y un
+`system_prompt` inyectados. El agente de RH conserva las dos herramientas de solo lectura y se
+construye una vez en `create_app`; el agente de facturación tiene solo `crear_factura` y se
+construye en cada petición de `POST /invoice`. El bucle, el protocolo JSON y el tope
+`AGENT_MAX_STEPS` son los mismos para los dos.
 
 ## Contexto
 

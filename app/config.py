@@ -43,6 +43,12 @@ SUPPORTED_ENVIRONMENTS = (ENVIRONMENT_DEVELOPMENT, ENVIRONMENT_PRODUCTION)
 DEFAULT_ENVIRONMENT = ENVIRONMENT_DEVELOPMENT
 DEFAULT_RATE_LIMIT_PER_MINUTE = 30
 
+DEFAULT_CLIENTES_PATH = "data/clientes.json"
+DEFAULT_CONCEPTOS_PATH = "data/conceptos.json"
+DEFAULT_MAX_INVOICE_LINES = 5
+DEFAULT_MAX_LINE_QUANTITY = 1000
+DEFAULT_PII_MASKING = True
+
 
 @dataclass(frozen=True)
 class Settings:  # pylint: disable=too-many-instance-attributes
@@ -101,6 +107,17 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     :type api_keys: Mapping[str, str]
     :param rate_limit_per_minute: Peticiones por cliente por minuto.
     :type rate_limit_per_minute: int
+    :param clientes_path: Ruta absoluta al catálogo de clientes.
+    :type clientes_path: str
+    :param conceptos_path: Ruta absoluta al catálogo de conceptos.
+    :type conceptos_path: str
+    :param max_invoice_lines: Máximo de líneas por factura.
+    :type max_invoice_lines: int
+    :param max_line_quantity: Cantidad máxima por línea.
+    :type max_line_quantity: int
+    :param pii_masking: Enmascarar PII antes del modelo (obligatorio en
+        producción).
+    :type pii_masking: bool
     """
 
     model_provider: str
@@ -130,6 +147,11 @@ class Settings:  # pylint: disable=too-many-instance-attributes
         default_factory=dict, repr=False, hash=False
     )
     rate_limit_per_minute: int = DEFAULT_RATE_LIMIT_PER_MINUTE
+    clientes_path: str = ""
+    conceptos_path: str = ""
+    max_invoice_lines: int = DEFAULT_MAX_INVOICE_LINES
+    max_line_quantity: int = DEFAULT_MAX_LINE_QUANTITY
+    pii_masking: bool = DEFAULT_PII_MASKING
 
 
 def _boolean(env: Mapping[str, str], name: str, default: bool) -> bool:
@@ -403,6 +425,31 @@ def _access_settings(env: Mapping[str, str]) -> dict:
     }
 
 
+def _invoice_settings(env: Mapping[str, str]) -> dict:
+    """Lee el catálogo, los límites de la factura y el enmascarado de PII.
+
+    :param env: Variables de entorno.
+    :type env: Mapping[str, str]
+    :return: ``clientes_path``, ``conceptos_path``, ``max_invoice_lines``,
+        ``max_line_quantity`` y ``pii_masking``.
+    :rtype: dict
+    :raises ValueError: Si una ruta no existe o un valor es inválido.
+    """
+    return {
+        "clientes_path": _existing_file(env, "CLIENTES_PATH", DEFAULT_CLIENTES_PATH),
+        "conceptos_path": _existing_file(
+            env, "CONCEPTOS_PATH", DEFAULT_CONCEPTOS_PATH
+        ),
+        "max_invoice_lines": _positive_int(
+            env, "MAX_INVOICE_LINES", DEFAULT_MAX_INVOICE_LINES
+        ),
+        "max_line_quantity": _positive_int(
+            env, "MAX_LINE_QUANTITY", DEFAULT_MAX_LINE_QUANTITY
+        ),
+        "pii_masking": _boolean(env, "PII_MASKING", DEFAULT_PII_MASKING),
+    }
+
+
 def _enforce_compliance(settings: Settings) -> Settings:
     """Se niega a arrancar si la configuración incumple las reglas de producción.
 
@@ -460,5 +507,6 @@ def load_settings(env: Optional[Mapping[str, str]] = None) -> Settings:
         **_model_settings(source),
         **_cost_settings(source),
         **_access_settings(source),
+        **_invoice_settings(source),
     )
     return _enforce_compliance(settings)

@@ -1,7 +1,8 @@
 """API web sin estado del HR Assistant, con request id, log JSON, métricas y costo.
 
 Desde la sesión 4 ``POST /ask`` y ``GET /metrics`` piden una clave por cliente
-en ``X-API-Key`` y tienen un límite de peticiones por cliente.
+en ``X-API-Key`` y tienen un límite de peticiones por cliente. ``POST /invoice``
+arma un borrador de factura con las mismas reglas de acceso.
 """
 
 import functools
@@ -16,10 +17,19 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, field_validator
 
 from app.agent import Agent
+from app.catalog import Catalog
 from app.clock import Clock, SystemClock
 from app.config import Settings, load_settings
 from app.directory import EmployeeDirectory
 from app.gateway import ModelUnavailableError
+from app.invoice import FolioFactory, InvoiceService
+from app.invoice_agent import InvoiceCreator
+from app.invoice_api import (
+    InvoiceDependencies,
+    InvoiceHandler,
+    InvoiceResponse,
+    build_invoice_request_model,
+)
 from app.llm import LanguageModel, build_models
 from app.logging_json import JsonLogger
 from app.metrics import Metrics
@@ -274,12 +284,15 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals
     metrics: Optional[Metrics] = None,
     prices: Optional[PriceTable] = None,
     rate_limiter: Optional[RateLimiter] = None,
+    catalog: Optional[Catalog] = None,
+    folio_factory: Optional[FolioFactory] = None,
+    invoice_service: Optional[InvoiceCreator] = None,
 ) -> FastAPI:
     """Crea la aplicación con sus dependencias inyectadas.
 
     Las dependencias que falten se construyen desde las variables de entorno.
-    ``POST /ask`` y ``GET /metrics`` piden ``X-API-Key``; ``/``, ``/health`` y
-    ``/docs`` no.
+    ``POST /ask``, ``POST /invoice`` y ``GET /metrics`` piden ``X-API-Key``;
+    ``/``, ``/health`` y ``/docs`` no.
 
     :param settings: Configuración validada.
     :type settings: Settings or None
@@ -298,27 +311,63 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals
     :param rate_limiter: Límite por cliente; por omisión usa
         ``RATE_LIMIT_PER_MINUTE`` con su propio reloj del sistema.
     :type rate_limiter: RateLimiter or None
+    :param catalog: Catálogo de facturación; por omisión se lee de
+        ``CLIENTES_PATH`` y ``CONCEPTOS_PATH``.
+    :type catalog: Catalog or None
+    :param folio_factory: Generador de folios; por omisión un UUID.
+    :type folio_factory: Callable[[], str] or None
+    :param invoice_service: Servicio que arma la factura; por omisión
+        ``InvoiceService`` con el catálogo, el reloj y los límites.
+    :type invoice_service: InvoiceCreator or None
     :return: La aplicación FastAPI.
     :rtype: FastAPI
-    :raises ValueError: Si falta el modelo pequeño o el grande.
+    :raises ValueError: Si falta el modelo pequeño o el grande, o si el
+        catálogo no es válido.
     """
     settings = settings or load_settings()
     directory = directory or EmployeeDirectory(settings.employees_path)
     clock = clock or SystemClock()
     logger = logger or JsonLogger(service=settings.service_name, clock=clock)
     metrics = metrics or Metrics(slo_p95_ms=settings.slo_p95_ms)
-    models = _checked_models(settings, models or build_models(settings, directory))
+    catalog = catalog or Catalog.from_files(
+        settings.clientes_path, settings.conceptos_path
+    )
+    models = _checked_models(
+        settings, models or build_models(settings, directory, catalog=catalog)
+    )
+    prices = prices or PriceTable.from_file(settings.prices_path)
+    tracer = functools.partial(traced, settings)
     agent = Agent(
         model=models[settings.model_large],
         directory=directory,
         max_steps=settings.agent_max_steps,
         logger=logger,
-        tracer=functools.partial(traced, settings),
-        prices=prices or PriceTable.from_file(settings.prices_path),
+        tracer=tracer,
+        prices=prices,
         history_window=settings.history_window,
+    )
+    invoice_handler = InvoiceHandler(
+        InvoiceDependencies(
+            settings=settings,
+            models=models,
+            catalog=catalog,
+            service=invoice_service
+            or InvoiceService(
+                catalog,
+                clock,
+                settings.max_invoice_lines,
+                settings.max_line_quantity,
+                folio_factory=folio_factory,
+            ),
+            logger=logger,
+            metrics=metrics,
+            prices=prices,
+            tracer=tracer,
+        )
     )
     index_html = INDEX_PATH.read_text(encoding="utf-8")
     ask_request = _build_request_model(settings.max_question_chars)
+    invoice_request = build_invoice_request_model(settings.max_question_chars)
     require_client = _client_dependency(
         ApiKeyAuthenticator(settings.api_keys),
         rate_limiter
@@ -385,6 +434,27 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-locals
             cost_usd=result.cost_usd,
             request_id=request_id,
         )
+
+    @application.post("/invoice", response_model=InvoiceResponse)
+    def invoice(
+        body: invoice_request,  # type: ignore
+        request: Request,
+        client: str = Depends(require_client),
+    ) -> Union[InvoiceResponse, JSONResponse]:
+        """Convierte una frase en un borrador de factura sin validez fiscal.
+
+        Pide ``X-API-Key`` y comparte el límite de peticiones con ``/ask``.
+        Errores de negocio: ``422`` con el motivo en español. Factura que no
+        pasa la validación de salida: ``500``. Modelo real caído: ``502``.
+        """
+        request_id = request.state.request_id
+        try:
+            return invoice_handler.handle(  # type: ignore[return-value]
+                body.text, request_id, client
+            )
+        except ModelUnavailableError as error:
+            logger.emit("error", request_id, error_type=type(error).__name__)
+            return _model_unavailable(request_id)
 
     return application
 

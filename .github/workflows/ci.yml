@@ -103,6 +103,11 @@ jobs:
       - uses: actions/checkout@v5
       - name: docker build
         run: docker build -t hr-assistant:ci .
+      - name: La imagen trae los catálogos de facturación
+        # CLIENTES_PATH y CONCEPTOS_PATH apuntan por omisión a data/ (spec/05-facturacion.md)
+        run: |
+          docker run --rm --entrypoint sh hr-assistant:ci -c \
+            "test -f data/clientes.json && test -f data/conceptos.json"
       - name: La imagen arranca y responde en /health
         run: |
           docker run -d --name hr-assistant -p 8000:8000 \

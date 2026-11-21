@@ -30,6 +30,12 @@
     button { padding: 0.5rem 1rem; }
     .key-row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
     .key-row label { font-size: 0.9rem; }
+    h2 { font-size: 1.15rem; margin-top: 2rem; }
+    .notice { font-size: 0.85rem; color: #666; }
+    #invoice-result { margin-top: 1rem; }
+    table { border-collapse: collapse; width: 100%; margin: 0.5rem 0; }
+    th, td { border: 1px solid #ccc; padding: 0.3rem 0.5rem; text-align: left; }
+    td.amount, th.amount { text-align: right; }
   </style>
 </head>
 <body>
@@ -46,6 +52,20 @@
            autocomplete="off">
     <button id="send" data-testid="send" type="submit">Enviar</button>
   </form>
+
+  <section aria-labelledby="invoice-title">
+    <h2 id="invoice-title">Factura</h2>
+    <p class="notice">Borrador sin validez fiscal: no se timbra ni se guarda.</p>
+    <form id="invoice-form">
+      <input id="invoice-text" data-testid="invoice-text" type="text"
+             placeholder="Factura a Ferretería López 10 horas de consultoría fiscal"
+             autocomplete="off">
+      <button id="invoice-send" data-testid="invoice-send" type="submit">
+        Crear borrador
+      </button>
+    </form>
+    <div id="invoice-result" data-testid="invoice-result" aria-live="polite"></div>
+  </section>
   <script>
     // El historial vive solo en el navegador; la API no guarda nada.
     const history = [];
@@ -133,6 +153,109 @@
       } finally {
         sendButton.disabled = false;
         questionInput.focus();
+      }
+    });
+
+    // Sección «Factura»: todo se pinta con textContent, nunca como HTML.
+    const invoiceForm = document.getElementById("invoice-form");
+    const invoiceInput = document.getElementById("invoice-text");
+    const invoiceButton = document.getElementById("invoice-send");
+    const invoiceResult = document.getElementById("invoice-result");
+
+    // Crea un elemento con su texto ya escapado por textContent.
+    function textElement(tag, text, className) {
+      const element = document.createElement(tag);
+      element.textContent = text;
+      if (className) {
+        element.className = className;
+      }
+      return element;
+    }
+
+    // Muestra un mensaje de error en la sección de factura.
+    function showInvoiceError(text) {
+      invoiceResult.replaceChildren(textElement("div", "Error: " + text, "error"));
+    }
+
+    // Mensaje de error de /invoice: con 422 usa el detalle del servidor.
+    async function invoiceErrorReason(response) {
+      if (response.status === 422) {
+        try {
+          const body = await response.json();
+          if (typeof body.detail === "string") {
+            return body.detail;
+          }
+        } catch (error) {
+          // Cuerpo ilegible: se usa el mensaje fijo.
+        }
+        return "La frase no es válida (vacía o demasiado larga).";
+      }
+      return errorReason(response);
+    }
+
+    // Arma la tabla de líneas de la factura.
+    function invoiceTable(lines) {
+      const table = document.createElement("table");
+      const header = document.createElement("tr");
+      const titles = ["Concepto", "Unidad", "Cantidad", "Precio", "Importe"];
+      titles.forEach((title, index) => {
+        header.appendChild(textElement("th", title, index >= 2 ? "amount" : ""));
+      });
+      table.appendChild(header);
+      lines.forEach((line) => {
+        const row = document.createElement("tr");
+        row.appendChild(textElement("td", line.descripcion));
+        row.appendChild(textElement("td", line.unidad));
+        row.appendChild(textElement("td", String(line.cantidad), "amount"));
+        row.appendChild(textElement("td", line.precio_unitario, "amount"));
+        row.appendChild(textElement("td", line.importe, "amount"));
+        table.appendChild(row);
+      });
+      return table;
+    }
+
+    // Pinta cliente, líneas, subtotal, IVA y total.
+    function showInvoice(body) {
+      const invoice = body.invoice;
+      invoiceResult.replaceChildren(
+        textElement("div", "Folio: " + invoice.folio + " (" + invoice.estado + ")"),
+        textElement("div", "Fecha: " + invoice.fecha),
+        textElement("div", "Cliente: " + invoice.cliente.nombre +
+                           " (RFC " + invoice.cliente.rfc + ")"),
+        invoiceTable(invoice.lineas),
+        textElement("div", "Subtotal: " + invoice.subtotal + " " + invoice.moneda),
+        textElement("div", "IVA (16 %): " + invoice.iva + " " + invoice.moneda),
+        textElement("div", "Total: " + invoice.total + " " + invoice.moneda),
+        textElement("div", "Id para soporte (request_id): " + body.request_id,
+                    "request-id")
+      );
+    }
+
+    invoiceForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const text = invoiceInput.value.trim();
+      if (!text) {
+        showInvoiceError("Escribe una frase antes de enviar.");
+        return;
+      }
+      invoiceButton.disabled = true;
+      const apiKey = apiKeyInput.value.trim();
+      sessionStorage.setItem(API_KEY_STORAGE, apiKey);
+      try {
+        const response = await fetch("/invoice", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+          body: JSON.stringify({ text: text }),
+        });
+        if (!response.ok) {
+          showInvoiceError(await invoiceErrorReason(response));
+          return;
+        }
+        showInvoice(await response.json());
+      } catch (error) {
+        showInvoiceError("no se pudo conectar con el servidor.");
+      } finally {
+        invoiceButton.disabled = false;
       }
     });
   </script>

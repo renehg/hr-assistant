@@ -72,4 +72,6 @@ def production_violations(settings: "Settings") -> List[str]:
         found.append("MODEL_PROVIDER must not be fake in production")
     found.extend(_key_violations(settings))
     found.extend(_tracing_violations(settings))
+    if not settings.pii_masking:
+        found.append("PII_MASKING must be true in production")
     return found

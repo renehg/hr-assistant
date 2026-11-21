@@ -49,6 +49,9 @@ class Metrics:  # pylint: disable=too-many-instance-attributes
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost_usd = 0.0
+        self._invoices_created = 0
+        self._invoices_rejected = 0
+        self._pii_detected = 0
         self._lock = threading.Lock()
 
     def record_request(self, status: int, latency_ms: float) -> None:
@@ -86,11 +89,27 @@ class Metrics:  # pylint: disable=too-many-instance-attributes
         with self._lock:
             self._cost_usd += cost_usd
 
+    def record_invoice_created(self) -> None:
+        """Cuenta un borrador de factura entregado."""
+        with self._lock:
+            self._invoices_created += 1
+
+    def record_invoice_rejected(self) -> None:
+        """Cuenta una factura rechazada (negocio o validación de salida)."""
+        with self._lock:
+            self._invoices_rejected += 1
+
+    def record_pii_detected(self) -> None:
+        """Cuenta una petición en la que se detectó al menos un tipo de PII."""
+        with self._lock:
+            self._pii_detected += 1
+
     def snapshot(self) -> dict:
         """Arma el cuerpo de ``GET /metrics``.
 
         :return: ``pid``, ``requests``, ``error_rate``, ``latency_ms``,
-            ``tokens``, ``cost_usd`` y ``slo``.
+            ``tokens``, ``cost_usd``, ``slo``, ``invoices_created``,
+            ``invoices_rejected`` y ``pii_detected``.
         :rtype: dict
         """
         with self._lock:
@@ -99,6 +118,11 @@ class Metrics:  # pylint: disable=too-many-instance-attributes
             errors = self._errors
             tokens = {"input": self._input_tokens, "output": self._output_tokens}
             cost_usd = self._cost_usd
+            invoices = {
+                "invoices_created": self._invoices_created,
+                "invoices_rejected": self._invoices_rejected,
+                "pii_detected": self._pii_detected,
+            }
         p95 = round(nearest_rank(latencies, 95), DECIMALS)
         return {
             "pid": os.getpid(),
@@ -111,4 +135,5 @@ class Metrics:  # pylint: disable=too-many-instance-attributes
             "tokens": tokens,
             "cost_usd": cost_usd,
             "slo": {"p95_ms_target": self._slo_p95_ms, "met": p95 < self._slo_p95_ms},
+            **invoices,
         }
